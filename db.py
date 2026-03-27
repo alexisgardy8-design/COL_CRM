@@ -7,7 +7,16 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise EnvironmentError(
+        "Variables d'environnement manquantes : SUPABASE_URL et SUPABASE_KEY "
+        "doivent être définies dans le fichier .env"
+    )
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# URL webhook n8n — modifiable via .env pour pointer vers un VPS en production
+N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/deal-gagne")
 
 
 # ─────────────────────────────────────────
@@ -79,6 +88,11 @@ def get_opportunite(id: str):
     return res.data
 
 def create_opportunite(data: dict):
+    if not data.get("contact_id"):
+        raise ValueError(
+            "Impossible de créer une opportunité sans contact. "
+            "Veuillez associer un contact à cette opportunité."
+        )
     res = supabase.table("opportunite").insert(data).execute()
     return res.data
 
@@ -124,7 +138,7 @@ def get_kpis():
     ).execute()
     data = res.data
 
-    total_prospects  = len(data)
+    total_prospects  = sum(1 for r in data if r["statut"] not in ["gagne", "perdu"])
     pipeline_total   = sum(float(r["montant_vise"] or 0) for r in data if r["statut"] not in ["perdu"])
     pipeline_pondere = sum(
         float(r["montant_vise"] or 0) * (int(r["probabilite"] or 0) / 100)

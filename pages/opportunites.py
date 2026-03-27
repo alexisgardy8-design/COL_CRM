@@ -1,8 +1,12 @@
 import streamlit as st
 import pandas as pd
+import requests
+from datetime import date
 import db
+import utils
 
 st.set_page_config(page_title="Opportunités", page_icon="🎯", layout="wide")
+utils.inject_css()
 
 st.title(" Opportunités — Pipeline")
 
@@ -31,6 +35,7 @@ filtre_sort    = c3.selectbox("Trier par", ["Date relance", "Montant (desc)", "P
 # ─────────────────────────────────────────
 
 opps = db.get_opportunites(statut=None if filtre_statut == "Tous" else filtre_statut)
+tous_contacts = db.get_contacts()
 
 if not opps:
     st.info("Aucune opportunité pour l'instant.")
@@ -106,7 +111,6 @@ if vue == "Cards":
                     st.caption(f" {nom_c}")
                     st.markdown(f"**{float(o.get('montant_vise') or 0):,.0f} €** · {o.get('probabilite',0)} %")
                     if o.get("date_relance"):
-                        from datetime import date
                         relance = o["date_relance"]
                         aujourd_hui = date.today().isoformat()
                         if relance < aujourd_hui:
@@ -130,10 +134,9 @@ if vue == "Cards":
                         if st.button("Changer", key=f"btn_{o['id']}"):
                             db.update_opportunite(o["id"], {"statut": nouveau})
                             if nouveau == "gagne":
-                                import requests
                                 try:
                                     requests.post(
-                                        "http://localhost:5678/webhook/deal-gagne",
+                                        db.N8N_WEBHOOK_URL,
                                         json={
                                             "opportunite_id": o["id"],
                                             "titre":          o["titre"],
@@ -143,7 +146,7 @@ if vue == "Cards":
                                         timeout=5
                                     )
                                 except Exception:
-                                    pass
+                                    st.warning("Statut mis à jour, mais n8n n'a pas pu être notifié (webhook injoignable).")
                             st.rerun()
 
                     if st.button("Supprimer", key=f"del_{o['id']}"):
@@ -158,6 +161,71 @@ if vue == "Cards":
                         if d2.button("Non", key=f"no_{o['id']}"):
                             st.session_state[f"confirm_del_{o['id']}"] = False
                             st.rerun()
+
+                    # Modifier opportunité
+                    if st.button("Modifier", key=f"edit_{o['id']}"):
+                        st.session_state[f"editing_opp_{o['id']}"] = True
+
+                    if st.session_state.get(f"editing_opp_{o['id']}"):
+                        contacts_opp = [
+                            c for c in tous_contacts
+                            if c.get("entreprise_id") == o.get("entreprise_id")
+                        ]
+                        with st.form(f"form_edit_opp_{o['id']}"):
+                            st.markdown("**Modifier l'opportunité**")
+                            fe1, fe2 = st.columns(2)
+                            titre_e   = fe1.text_input("Titre *", value=o.get("titre",""))
+                            montant_e = fe2.number_input(
+                                "Montant (€)", min_value=0.0, step=100.0,
+                                value=float(o.get("montant_vise") or 0)
+                            )
+                            statuts_list = ["prospect","contacte","en_discussion","gagne","perdu","en_pause"]
+                            statut_idx   = statuts_list.index(o.get("statut","prospect"))
+                            statut_e  = fe1.selectbox("Statut", statuts_list, index=statut_idx)
+                            proba_e   = fe2.slider("Probabilité (%)", 0, 100, int(o.get("probabilite") or 0))
+                            relance_val = date.fromisoformat(o["date_relance"]) if o.get("date_relance") else date.today()
+                            relance_e = fe1.date_input("Date de relance", value=relance_val)
+                            closing_e = None
+                            if statut_e in ["gagne", "perdu"]:
+                                closing_val = date.fromisoformat(o["date_closing"]) if o.get("date_closing") else date.today()
+                                closing_e = fe2.date_input("Date de closing", value=closing_val)
+                            # Contact — clé avec discriminant UUID pour éviter les homonymes
+                            contact_opts = {
+                                f"{c['prenom']} {c['nom']} ({c['id'][:8]})": c["id"]
+                                for c in contacts_opp
+                            }
+                            new_contact_id = o.get("contact_id")
+                            if contact_opts:
+                                ct_labels = list(contact_opts.keys())
+                                ct_ids    = list(contact_opts.values())
+                                idx_ct    = ct_ids.index(new_contact_id) if new_contact_id in ct_ids else 0
+                                choix_ct  = st.selectbox("Contact *", ct_labels, index=idx_ct)
+                                new_contact_id = contact_opts[choix_ct]
+                            else:
+                                st.warning("Aucun contact disponible pour cette entreprise.")
+                            desc_e = st.text_area("Description", value=o.get("description",""))
+                            ef1, ef2 = st.columns(2)
+                            if ef1.form_submit_button("Sauvegarder", type="primary"):
+                                if not titre_e:
+                                    st.error("Le titre est obligatoire.")
+                                else:
+                                    payload = {
+                                        "titre":        titre_e,
+                                        "montant_vise": montant_e,
+                                        "statut":       statut_e,
+                                        "probabilite":  proba_e,
+                                        "date_relance": relance_e.isoformat(),
+                                        "description":  desc_e or None,
+                                        "contact_id":   new_contact_id,
+                                    }
+                                    if closing_e:
+                                        payload["date_closing"] = closing_e.isoformat()
+                                    db.update_opportunite(o["id"], payload)
+                                    st.session_state[f"editing_opp_{o['id']}"] = False
+                                    st.rerun()
+                            if ef2.form_submit_button("Annuler"):
+                                st.session_state[f"editing_opp_{o['id']}"] = False
+                                st.rerun()
 
         st.divider()
 

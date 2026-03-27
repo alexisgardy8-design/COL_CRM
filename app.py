@@ -1,11 +1,14 @@
 import streamlit as st
+import pandas as pd
 import db
+import utils
 
 st.set_page_config(
     page_title="CRM Club Olympique de Lutèce",
     page_icon="⚽",
     layout="wide"
 )
+utils.inject_css()
 
 st.title("CRM — Prospection Partenaires")
 
@@ -19,7 +22,8 @@ col1, col2, col3, col4, col5 = st.columns(5)
 
 col1.metric(
     label="Prospects actifs",
-    value=kpis["total_prospects"]
+    value=kpis["total_prospects"],
+    help="Opportunités hors deals gagnés/perdus"
 )
 col2.metric(
     label="Pipeline total",
@@ -82,8 +86,6 @@ st.divider()
 
 st.subheader("📊 Pipeline par statut")
 
-import pandas as pd
-
 opps = db.get_opportunites()
 
 if not opps:
@@ -114,7 +116,7 @@ else:
 
     st.divider()
 
-    # Dernières opportunités
+    # Dernières opportunités ajoutées
     st.subheader("Dernières opportunités ajoutées")
 
     df_display = df.copy()
@@ -126,7 +128,7 @@ else:
     )
     df_display = df_display[[
         "titre", "entreprise", "contact",
-        "montant_vise", "statut", "probabilite", "date_relance"
+        "montant_vise", "statut", "probabilite", "date_relance", "cree_le"
     ]].rename(columns={
         "titre":         "Deal",
         "entreprise":    "Entreprise",
@@ -134,7 +136,8 @@ else:
         "montant_vise":  "Montant (€)",
         "statut":        "Statut",
         "probabilite":   "Proba (%)",
-        "date_relance":  "Relance"
-    }).sort_values("Relance").head(10)
+        "date_relance":  "Relance",
+        "cree_le":       "_cree_le",
+    }).sort_values("_cree_le", ascending=False).head(10).drop(columns=["_cree_le"])
 
     st.dataframe(df_display, use_container_width=True, hide_index=True)

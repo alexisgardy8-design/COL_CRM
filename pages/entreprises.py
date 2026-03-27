@@ -1,7 +1,11 @@
 import streamlit as st
 import db
+import utils
 
 st.set_page_config(page_title="Entreprises", page_icon="🏢", layout="wide")
+utils.inject_css()
+
+TAILLES = ["TPE", "PME", "ETI", "GE", "ASSOCIATION", "FONDATION"]
 
 st.title("Entreprises")
 
@@ -16,7 +20,7 @@ with st.expander(" Ajouter une entreprise", expanded=False):
         secteur     = c2.text_input("Secteur (ex: Alimentation, Auto...)")
         ville       = c1.text_input("Ville")
         code_postal = c2.text_input("Code postal")
-        taille      = c1.selectbox("Taille", ["TPE", "PME", "ETI", "GE"])
+        taille      = c1.selectbox("Taille", TAILLES)
         site_web    = c2.text_input("Site web")
         telephone   = c1.text_input("Téléphone")
         notes       = st.text_area("Notes")
@@ -67,6 +71,10 @@ st.caption(f"{len(entreprises)} entreprise(s)")
 # CARDS
 # ─────────────────────────────────────────
 
+# Chargement unique des listes pour éviter le N+1 (une seule requête chacune)
+toutes_opps = db.get_opportunites()
+tous_contacts = db.get_contacts()
+
 for e in entreprises:
     with st.container(border=True):
         c1, c2, c3 = st.columns([4, 3, 2])
@@ -82,18 +90,20 @@ for e in entreprises:
             if e.get("telephone"):
                 st.markdown(f" {e['telephone']}")
             if e.get("site_web"):
-                st.markdown(f" [{e['site_web']}]({e['site_web']})")
+                url = e["site_web"]
+                if not url.startswith(("http://", "https://")):
+                    url = "https://" + url
+                st.markdown(f" [{e['site_web']}]({url})")
 
         with c3:
             st.caption(f"Taille : {e.get('taille','—')}")
 
             # Contacts liés
-            contacts = db.get_contacts(entreprise_id=e["id"])
+            contacts = [c for c in tous_contacts if c.get("entreprise_id") == e["id"]]
             st.caption(f" {len(contacts)} contact(s)")
 
             # Opportunités liées
-            opps = db.get_opportunites()
-            opps_entreprise = [o for o in opps if o.get("entreprise_id") == e["id"]]
+            opps_entreprise = [o for o in toutes_opps if o.get("entreprise_id") == e["id"]]
             st.caption(f" {len(opps_entreprise)} opportunité(s)")
 
         # Notes
@@ -143,8 +153,9 @@ for e in entreprises:
                 secteur_e = c2.text_input("Secteur", value=e.get("secteur",""))
                 ville_e   = c1.text_input("Ville", value=e.get("ville",""))
                 cp_e      = c2.text_input("Code postal", value=e.get("code_postal",""))
-                taille_e  = c1.selectbox("Taille", ["TPE","PME","ETI","GE"],
-                                index=["TPE","PME","ETI","GE"].index(e.get("taille","TPE")))
+                taille_val = e.get("taille", TAILLES[0])
+                taille_idx = TAILLES.index(taille_val) if taille_val in TAILLES else 0
+                taille_e  = c1.selectbox("Taille", TAILLES, index=taille_idx)
                 tel_e     = c2.text_input("Téléphone", value=e.get("telephone",""))
                 web_e     = c1.text_input("Site web", value=e.get("site_web",""))
                 notes_e   = st.text_area("Notes", value=e.get("notes",""))
@@ -197,39 +208,98 @@ for e in entreprises:
         # ── Formulaire ajout opportunité ──
         if st.session_state.get(f"add_opp_{e['id']}"):
             contacts_e = db.get_contacts(entreprise_id=e["id"])
-            with st.form(f"form_opp_{e['id']}"):
-                st.markdown("**Nouvelle opportunité**")
-                c1, c2 = st.columns(2)
-                titre    = c1.text_input("Titre * (ex: Sponsor maillot)")
-                montant  = c2.number_input("Montant visé (€)", min_value=0.0, step=100.0)
-                statut   = c1.selectbox("Statut", ["prospect","contacte","en_discussion","gagne","perdu","en_pause"])
-                proba    = c2.slider("Probabilité (%)", 0, 100, 50)
-                relance  = c1.date_input("Date de relance")
-                closing  = c2.date_input("Date closing")
-                contact_options = {f"{c['prenom']} {c['nom']}": c["id"] for c in contacts_e}
-                contact_choisi = None
-                if contact_options:
-                    choix = st.selectbox("Contact", list(contact_options.keys()))
-                    contact_choisi = contact_options[choix]
-                description = st.text_area("Description de l'offre")
-                s1, s2 = st.columns(2)
-                if s1.form_submit_button("Ajouter", type="primary"):
-                    if not titre:
-                        st.error("Le titre est obligatoire.")
-                    else:
-                        db.create_opportunite({
-                            "entreprise_id": e["id"],
-                            "contact_id":    contact_choisi,
-                            "titre":         titre,
-                            "montant_vise":  montant,
-                            "statut":        statut,
-                            "probabilite":   proba,
-                            "date_relance":  relance.isoformat(),
-                            "date_closing":  closing.isoformat(),
-                            "description":   description or None,
-                        })
-                        st.session_state[f"add_opp_{e['id']}"] = False
-                        st.rerun()
-                if s2.form_submit_button("Annuler"):
+            if not contacts_e:
+                st.error(
+                    "Impossible de créer une opportunité sans contact. "
+                    "Ajoutez d'abord un contact à cette entreprise."
+                )
+                if st.button("Fermer", key=f"close_opp_{e['id']}"):
                     st.session_state[f"add_opp_{e['id']}"] = False
                     st.rerun()
+            else:
+                with st.form(f"form_opp_{e['id']}"):
+                    st.markdown("**Nouvelle opportunité**")
+                    c1, c2 = st.columns(2)
+                    titre    = c1.text_input("Titre * (ex: Sponsor maillot)")
+                    montant  = c2.number_input("Montant visé (€)", min_value=0.0, step=100.0)
+                    statut   = c1.selectbox("Statut", ["prospect","contacte","en_discussion","gagne","perdu","en_pause"])
+                    proba    = c2.slider("Probabilité (%)", 0, 100, 50)
+                    relance  = c1.date_input("Date de relance")
+                    # Clé = "Prénom Nom (8 premiers chars de l'UUID)" pour éviter les collisions homonymes
+                    contact_options = {
+                        f"{c['prenom']} {c['nom']} ({c['id'][:8]})": c["id"]
+                        for c in contacts_e
+                    }
+                    choix = st.selectbox("Contact *", list(contact_options.keys()))
+                    contact_choisi = contact_options[choix]
+                    description = st.text_area("Description de l'offre")
+                    s1, s2 = st.columns(2)
+                    if s1.form_submit_button("Ajouter", type="primary"):
+                        if not titre:
+                            st.error("Le titre est obligatoire.")
+                        elif not contact_choisi:
+                            st.error("Un contact est obligatoire pour créer une opportunité.")
+                        else:
+                            try:
+                                db.create_opportunite({
+                                    "entreprise_id": e["id"],
+                                    "contact_id":    contact_choisi,
+                                    "titre":         titre,
+                                    "montant_vise":  montant,
+                                    "statut":        statut,
+                                    "probabilite":   proba,
+                                    "date_relance":  relance.isoformat(),
+                                    "description":   description or None,
+                                })
+                                st.session_state[f"add_opp_{e['id']}"] = False
+                                st.rerun()
+                            except ValueError as exc:
+                                st.error(str(exc))
+                    if s2.form_submit_button("Annuler"):
+                        st.session_state[f"add_opp_{e['id']}"] = False
+                        st.rerun()
+
+        # ── Liste et modification des contacts existants ──
+        contacts_e_disp = [c for c in tous_contacts if c.get("entreprise_id") == e["id"]]
+        if contacts_e_disp:
+            with st.expander(f"Voir / modifier les contacts ({len(contacts_e_disp)})"):
+                for ct in contacts_e_disp:
+                    nom_ct = f"{ct.get('prenom','')} {ct.get('nom','')}".strip()
+                    col_ct1, col_ct2, col_ct3, col_ct4 = st.columns([3, 3, 2, 1])
+                    col_ct1.markdown(f"**{nom_ct}**{'  ★' if ct.get('principal') else ''}")
+                    col_ct2.caption(ct.get("poste") or "")
+                    col_ct3.caption(ct.get("email") or "")
+                    with col_ct4:
+                        if st.button("Modifier", key=f"edit_ct_{ct['id']}"):
+                            st.session_state[f"editing_ct_{ct['id']}"] = True
+
+                    if st.session_state.get(f"editing_ct_{ct['id']}"):
+                        with st.form(f"form_edit_ct_{ct['id']}"):
+                            st.markdown(f"**Modifier — {nom_ct}**")
+                            ec1, ec2 = st.columns(2)
+                            prenom_ct   = ec1.text_input("Prénom *",      value=ct.get("prenom",""))
+                            nom_ct_f    = ec2.text_input("Nom *",         value=ct.get("nom",""))
+                            poste_ct    = ec1.text_input("Poste",         value=ct.get("poste",""))
+                            email_ct    = ec2.text_input("Email",         value=ct.get("email",""))
+                            tel_ct      = ec1.text_input("Téléphone",     value=ct.get("telephone",""))
+                            linkedin_ct = ec2.text_input("LinkedIn URL",  value=ct.get("linkedin_url",""))
+                            principal_ct = st.checkbox("Contact principal", value=bool(ct.get("principal")))
+                            es1, es2 = st.columns(2)
+                            if es1.form_submit_button("Sauvegarder", type="primary"):
+                                if not prenom_ct or not nom_ct_f:
+                                    st.error("Prénom et nom obligatoires.")
+                                else:
+                                    db.update_contact(ct["id"], {
+                                        "prenom":       prenom_ct,
+                                        "nom":          nom_ct_f,
+                                        "poste":        poste_ct or None,
+                                        "email":        email_ct or None,
+                                        "telephone":    tel_ct or None,
+                                        "linkedin_url": linkedin_ct or None,
+                                        "principal":    principal_ct,
+                                    })
+                                    st.session_state[f"editing_ct_{ct['id']}"] = False
+                                    st.rerun()
+                            if es2.form_submit_button("Annuler"):
+                                st.session_state[f"editing_ct_{ct['id']}"] = False
+                                st.rerun()

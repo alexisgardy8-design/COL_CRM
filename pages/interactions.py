@@ -1,7 +1,11 @@
+import html as html_lib
 import streamlit as st
+import requests
 import db
+import utils
 
 st.set_page_config(page_title="Interactions", page_icon="💬", layout="wide")
+utils.inject_css()
 
 st.title("Interactions")
 
@@ -70,18 +74,26 @@ with st.expander("Changer le statut de l'opportunité"):
     nouveau_statut = st.selectbox("Nouveau statut", statuts, index=idx, key="new_statut")
     nouvelle_proba = st.slider("Probabilité (%)", 0, 100, int(opp["probabilite"] or 0))
 
-    if st.button("Mettre à jour le statut", type="primary"):
-        db.update_opportunite(opp["id"], {
+    # Champ closing uniquement si gagne ou perdu
+    date_closing = None
+    if nouveau_statut in ["gagne", "perdu"]:
+        date_closing = st.date_input("Date de closing")
+
+    if st.button("💾 Mettre à jour le statut", type="primary"):
+        update_data = {
             "statut":      nouveau_statut,
             "probabilite": nouvelle_proba,
-        })
+        }
+        if date_closing:
+            update_data["date_closing"] = date_closing.isoformat()
+
+        db.update_opportunite(opp["id"], update_data)
 
         # Si deal gagné → appeler le webhook n8n
         if nouveau_statut == "gagne":
-            import requests
             try:
                 requests.post(
-                    "http://localhost:5678/webhook/deal-gagne",
+                    db.N8N_WEBHOOK_URL,
                     json={
                         "opportunite_id": opp["id"],
                         "titre":          opp["titre"],
@@ -91,7 +103,7 @@ with st.expander("Changer le statut de l'opportunité"):
                     timeout=5
                 )
             except Exception:
-                pass  # n8n pas dispo, pas grave
+                st.warning("Statut mis à jour, mais n8n n'a pas pu être notifié (webhook injoignable).")
 
         st.success(f"Statut mis à jour → {nouveau_statut}")
         st.rerun()
@@ -126,10 +138,9 @@ with st.form("form_interaction"):
                 "prochain_rdv":   prochain.isoformat(),
                 "cree_par":       cree_par or "—",
             })
-            # Mettre à jour la date de relance sur l'opportunité
+            # Mettre à jour la date de relance sur l'opportunité (mis_a_jour_le géré par trigger)
             db.update_opportunite(opp["id"], {
-                "date_relance":  prochain.isoformat(),
-                "mis_a_jour_le": "now()",
+                "date_relance": prochain.isoformat(),
             })
             st.success("Interaction enregistrée et date de relance mise à jour !")
             st.rerun()
@@ -161,7 +172,12 @@ else:
             c1.markdown(f"## {icon}")
             with c2:
                 st.markdown(f"**{inter['type'].capitalize()}** — {inter['date']}")
-                st.markdown(inter["notes"])
+                notes_safe = html_lib.escape(inter["notes"])
+                st.markdown(
+                    f"<p style='white-space:pre-wrap;margin:0;font-size:0.9rem'>"
+                    f"{notes_safe}</p>",
+                    unsafe_allow_html=True
+                )
             with c3:
                 if inter.get("prochain_rdv"):
                     st.caption(f"Prochain RDV : {inter['prochain_rdv']}")
