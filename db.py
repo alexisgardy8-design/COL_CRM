@@ -118,13 +118,13 @@ def get_relances_du_jour():
 # ─────────────────────────────────────────
 
 def get_interactions(opportunite_id: str):
-    res = supabase.table("interaction").select("*").eq(
+    res = supabase.table("interactions").select("*").eq(
         "opportunite_id", opportunite_id
     ).order("date", desc=True).execute()
     return res.data
 
 def create_interaction(data: dict):
-    res = supabase.table("interaction").insert(data).execute()
+    res = supabase.table("interactions").insert(data).execute()
     return res.data
 
 
